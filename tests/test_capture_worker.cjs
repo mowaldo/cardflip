@@ -15,4 +15,10 @@ const ask=(windowId=1)=>new Promise(r=>{assert.equal(listener({type:'cardflip-re
  let guard;const source=fs.readFileSync('extension/background.js','utf8');const testChrome={...chrome,scripting:{executeScript:async({func})=>{guard=func;return [{result:{error:'not demo'}}];}}};
  let testListener;testChrome.runtime={...chrome.runtime,onMessage:{addListener:f=>testListener=f}};vm.runInNewContext(source,{chrome:testChrome,console,URL,location:{origin:'https://example.com',pathname:'/capture-demo.html'}});
  await new Promise(r=>testListener({type:'cardflip-request-demo',windowId:1},{id:'test',url:chrome.runtime.getURL('index.html')},r));assert.match(guard().error,/not the local/);
+ // The timed demo selects the current file, not always the first image.
+ const files=[{type:'image/png',size:1,tag:'first'},{type:'image/jpeg',size:1,tag:'second'}];
+ let actualReader;let actualListener;const readerChrome={...chrome,scripting:{executeScript:async({func})=>{actualReader=func;return [{result:{error:'test'}}];}},runtime:{...chrome.runtime,onMessage:{addListener:f=>actualListener=f}}};
+ class Reader{readAsDataURL(f){this.result=f.tag;this.onload();}}
+ vm.runInNewContext(source,{chrome:readerChrome,console,URL,location:{origin:'http://127.0.0.1:8765',pathname:'/capture-demo.html'},document:{getElementById:()=>({files,dataset:{index:'1'}})},FileReader:Reader});
+ await new Promise(r=>actualListener({type:'cardflip-request-demo',windowId:1},{id:'test',url:chrome.runtime.getURL('index.html')},r));assert.equal((await actualReader()).data,'second');
  console.log('Capture worker tests passed: direct command tab, missing URL, hash/query, window fallback, page guard, denied access and sender restriction');})().catch(e=>{console.error(e);process.exitCode=1;});

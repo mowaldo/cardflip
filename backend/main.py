@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
-from . import core, provider, recognition, label_image, vision, variants, board
+from . import core, provider, recognition, label_image, vision, variants, board, visual_library, reference_market, embeddings
 
 load_dotenv(core.ROOT/'.env')
 app=FastAPI(title='CardFlip Local',docs_url=None,redoc_url=None,openapi_url=None)
@@ -98,7 +98,7 @@ def result(key,payload,fetched,origin,notice=''):
     return {'key':key,'rows':payload['rows'],'source':payload['source'],'origin':origin,'fetched':fetched,'age_hours':round(core.age_hours(fetched),2),'stale':core.age_hours(fetched)>24,'notice':notice,'used':core.used(),'limit':core.budget()}
 
 @app.get('/api/status',dependencies=[Depends(auth)])
-def status(): return {'version':'0.9.4','key_configured':bool(os.getenv('COMPSAPI_KEY','').strip()),'used':core.used(),'limit':core.budget(),'ocr_available':bool(shutil.which('tesseract'))}
+def status(): return {'version':'1.0.2','key_configured':bool(os.getenv('COMPSAPI_KEY','').strip()),'used':core.used(),'limit':core.budget(),'ocr_available':bool(shutil.which('tesseract')),'visual_model_installed':embeddings.installed()}
 
 @app.post('/api/lookup',dependencies=[Depends(auth)])
 def lookup(req:Lookup):
@@ -232,6 +232,60 @@ def visual_compare(req:VisualCompare):
     try:return vision.compare(*images,req.variant)
     except RuntimeError as e:raise HTTPException(503,str(e))
     except (ValueError,OSError) as e:raise HTTPException(422,str(e))
+
+class RefMatch(OCR):
+    card:BoardCard
+class RefSave(RefMatch):
+    variant:str=Field(min_length=2,max_length=80)
+    confirmed:Literal[True]
+class RefDelete(BaseModel):
+    id:str=Field(pattern=r'^[a-f0-9]{64}$')
+
+def reference_data(encoded):
+    try: data=base64.b64decode(encoded,validate=True)
+    except (ValueError,binascii.Error):raise HTTPException(400,'Invalid image encoding.')
+    if len(data)>5_000_000 or not (data.startswith(b'\x89PNG\r\n\x1a\n') or data.startswith(b'\xff\xd8\xff')):raise HTTPException(400,'Choose PNG or JPEG under 5 MB.')
+    return data
+
+@app.post('/api/reference/save',dependencies=[Depends(auth)])
+def reference_save(req:RefSave):
+    try:return visual_library.add(req.card.model_dump(),req.variant,reference_data(req.image))
+    except (ValueError,OSError) as e:raise HTTPException(422,str(e))
+
+@app.post('/api/reference/rank',dependencies=[Depends(auth)])
+def reference_rank(req:RefMatch):
+    try:return visual_library.rank(req.card.model_dump(),reference_data(req.image))
+    except (ValueError,OSError) as e:raise HTTPException(422,str(e))
+
+class MarketRef(RefMatch):
+    confirmed:Literal[True]
+
+@app.post('/api/reference/market',dependencies=[Depends(auth)])
+def market_reference(req:MarketRef):
+    card=req.card.model_dump()
+    if not all(core.norm(card.get(k,'')) for k in ('player','year','set','number')):raise HTTPException(422,'Confirm player, year, set and checklist number for visual search.')
+    data=reference_data(req.image)
+    try:visual_library.read_image(data)
+    except (ValueError,OSError) as e:raise HTTPException(422,str(e))
+    key='active-ref:v1:'+core.cache_key(card)
+    origin='cache'
+    with lookup_lock:
+        old=core.get_cache(key)
+        if old and core.age_hours(old[1])<=24:items=old[0]['items']
+        else:
+            try:
+                if not os.getenv('COMPSAPI_KEY','').strip():raise RuntimeError('No API key configured.')
+                core.reserve();items=provider.fetch_active(card)
+                items=[{k:r[k] for k in ('item_id','title','image','card') if k in r} for r in items if isinstance(r,dict)]
+                # Store listing metadata only, never external image bytes.
+                core.put_cache(key,{'items':items});origin='provider'
+            except RuntimeError as e:raise HTTPException(503,str(e))
+    try:result=reference_market.rank(card,data,items)
+    except (ValueError,OSError) as e:raise HTTPException(422,str(e))
+    return dict(result,origin=origin,used=core.used(),limit=core.budget())
+
+@app.post('/api/reference/delete',dependencies=[Depends(auth)])
+def reference_delete(req:RefDelete):return {'deleted':visual_library.delete(req.id)}
 
 @app.post('/api/ocr',dependencies=[Depends(auth)])
 def ocr(req:OCR):

@@ -1,0 +1,4 @@
+# Optional only: install separately from the existing CardFlip stack.
+torch>=2.6,<3
+transformers>=4.48,<5
+safetensors>=0.4,<1

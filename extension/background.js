@@ -4,7 +4,9 @@ const DEMO='http://127.0.0.1:8765/capture-demo.html';
 // The page itself is the final authority; tab.url may be absent in Brave.
 function readSelectedFile(){
  if(location.origin!=='http://127.0.0.1:8765'||location.pathname!=='/capture-demo.html')return {error:'Active page is not the local CardFlip demo.'};
- const file=document.getElementById('photo')?.files?.[0];
+ const input=document.getElementById('photo');
+ const index=Number(input?.dataset?.index||0);
+ const file=Number.isInteger(index)&&index>=0?input?.files?.[index]:null;
  if(!file||!['image/png','image/jpeg'].includes(file.type)||file.size>5000000)return {error:'Choose a PNG/JPEG under 5 MB on the demo page first.'};
  return new Promise(resolve=>{const reader=new FileReader();reader.onload=()=>resolve({data:reader.result});reader.onerror=()=>resolve({error:'Could not read demo image.'});reader.readAsDataURL(file);});
 }

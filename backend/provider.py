@@ -31,3 +31,16 @@ def fetch_board(card):
     except ValueError as e:raise RuntimeError('Provider returned invalid JSON.') from e
     if not isinstance(data,dict) or data.get('ok') is False or not isinstance(data.get('items'),list):raise RuntimeError('Unexpected provider response.')
     return data['items']
+
+def fetch_active(card):
+    key=os.getenv('COMPSAPI_KEY','').strip()
+    if not key:raise RuntimeError('No API key configured.')
+    query=' '.join(card[k] for k in ('player','year','set','number'))
+    try:
+        r=requests.get('https://api.compsapi.com/v1/active',params={'q':query,'per_page':100,'sort':'best_match'},headers={'X-API-Key':key,'User-Agent':'CardFlipLocal/1.0.1'},timeout=(2,8),allow_redirects=False)
+        if r.status_code!=200:raise RuntimeError(f'Active listings returned HTTP {r.status_code}. No automatic retry.')
+        data=r.json()
+    except requests.RequestException as e:raise RuntimeError('Active listings connection failed.') from e
+    except ValueError as e:raise RuntimeError('Invalid active listing response.') from e
+    if not isinstance(data,dict) or data.get('ok') is False or not isinstance(data.get('items'),list):raise RuntimeError('Unexpected active listing response.')
+    return data['items']

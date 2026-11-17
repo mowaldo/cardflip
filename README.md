@@ -105,3 +105,58 @@ The Scan demo button now reads the chosen photo using an on-demand script in the
 
 ## v0.9.4 — Brave tab selection fix
 The shortcut uses its actual tab ID. The button uses the active tab in its window, falling back to the focused window only if no active tab is reported. Missing tab URL metadata no longer causes premature failure; the injected reader checks the exact loopback origin and demo path before reading the selected file. Query strings and hashes are accepted on that demo path. Known non-demo URLs are rejected before injection. No new browser permissions or live-site capture. If disconnected, the received image is retained and the UI prompts for the local token before scanning.
+
+## 1.0.0 — Visual intelligence preview (local reference library)
+
+This is an incremental upgrade of v0.9.4, not a replacement of the pricing engine. The stable main branch/tag should remain unchanged until tested. The existing `.env`, `.gitignore`, `data/`, `.venv/` and Git history are not included in the upgrade archive.
+
+1. Scan a card normally; correct the player, year, product and checklist number if necessary.
+2. Under **More scan tools → Compare a visual reference**, choose an authorized photo of a known card from the same family and enter its exact variant (e.g. Base or Silver Prizm).
+3. Select **Save photo as verified local reference**, and confirm the family and variant. This stores a resized JPEG locally in the existing SQLite database. Only manually saved reference photos persist; ordinary query images are not stored by this library. The library is limited to 250 photos total and 24 per family. Delete a reference in the same drawer when no longer needed.
+4. On later scans the price board loads as before. Local visual matching follows asynchronously; the top three distinct known references appear as visual suggestions. Click **View price** to select the corresponding board row if present. This does not select a bid or mark the variant verified. You can also trigger **Find matches in my library** manually.
+
+The matching module attempts to isolate a portrait quadrilateral and straighten perspective when reasonably unambiguous, then compares ORB local features and spatial color histograms. This is an experimental heuristic, not a calibrated probability. It may crop a slab rather than its card, confuse nearly identical foils, or miss tilted or obscured cards. The original recognition input is unchanged; cropping is currently only used for reference comparison. No DINO model or PSA integration is included in this preview. No extra CompsAPI requests are used by reference matching. The user must verify the exact variant and grade before relying on a price.
+
+The library starts empty; there is no automatic source of reference photographs. Only use photos you have permission to store. PSA's approval remains separate, as do live marketplace capture permissions. The existing keyboard capture remains limited to the local demo.
+
+Testing: `python -m unittest discover -s tests -q` (64 tests), `node tests/test_capture_worker.cjs`, and `node --check extension/app.js`. Full browser testing on Brave and real-world accuracy benchmarks remain outstanding.
+
+## v1.0.1 preview — optional marketplace reference photos
+
+The price board is unchanged. After scanning a card and checking its player, year, product and checklist number, expand **Find visual matches online (optional)** in the price board and click **Find reference photos**. This is opt-in and asks you to confirm that you have permission to process the images. The backend calls the documented CompsAPI `/v1/active` endpoint once if the family metadata cache is older than 24 hours. The same 100-request monthly and 10-request/minute local caps apply. No automatic polling, no paid upgrade, and no additional API key are needed.
+
+The service filters the returned listings by exact family and checklist number, skips unsupported specialty variants and junk titles, and compares up to ten candidate images (at most two per title-derived variant) locally using the existing OpenCV feature matcher. Only HTTPS images on the specific `i.ebayimg.com/images/` host/path are accepted; redirects are rejected, downloads are bounded, and the CompsAPI key is not sent to the image host. Only API listing metadata is cached in SQLite; external photo bytes are not persisted by this feature. The user remains responsible for third-party image rights. See https://compsapi.com/docs and https://compsapi.com/terms.
+
+These are unverified seller-labeled reference suggestions, not authentication, exact variant probabilities or sold comps. The matching score is a heuristic and may be affected by glare, artwork shared by parallels, slabs and crop errors. **View price** selects an existing sold-price board variant; it never imports asking prices, confirms identity, changes profit rules or automatically bids. Unspecified variants cannot select a bid from this panel. If no suitable images are returned, use your own authorized reference library or manual comparison. PSA is optional and still requires approval.
+
+Live marketplace capture remains disabled; the local demo shortcut and drag/drop are unchanged. The external photo lookup is optional and intended for research or resolving uncertainty, not a guaranteed sub-10-second auction operation.
+
+Tests: `python -m unittest discover -s tests -q`, `node tests/test_capture_worker.cjs`, `node --check extension/app.js`. Provider and image download tests use mocks; real API and Brave behavior must be verified on your machine.
+
+## v1.0.2 preview — optional DINOv2 and timed practice
+
+Unzip over the existing project on `feature/visual-intelligence`. This update retains the pricing board, capture shortcut, cache, credentials and local references. No required dependencies change.
+
+### Optional local visual embeddings
+
+```sh
+.venv/bin/python -m pip install -r requirements-visual.txt
+.venv/bin/python setup_visual.py
+```
+
+The explicit setup downloads `facebook/dinov2-small` to `data/models/dinov2-small` (keep `data/` ignored by Git). Restart the server. The status shows **DINO installed** if model files are present. Local or online visual matching reports the actual engine used: **OpenCV + DINOv2** or **OpenCV** if unavailable. The optional engine uses Apple MPS when supported and otherwise CPU. It never downloads weights during a scan or sends card images to a model service. External listing photos remain opt-in and ephemeral. Hybrid ranking uses 75% existing OpenCV geometry/color and 25% nonnegative DINO cosine similarity, an experimental heuristic, not a probability or variant verification. DINO may favor identical artwork across different finishes. Prices and bid limits are unchanged and never automatically selected based on similarity.
+
+### Timed practice
+
+Open `http://127.0.0.1:8765/capture-demo.html` and choose several authorized card photos. Open the sidebar. Choose a 10, 15 or 20 second round; click Start practice. Press Control+Shift+Y (or your assigned shortcut) to scan the currently displayed image. The page advances automatically; scanning stays manual. Verify that the result corresponds to the displayed card, especially if a scan finishes after the round changes. Previous/Next work outside a timed session. Cached images are fast; use new images to measure actual recognition. Fresh sold searches use the normal API quota. No simulated or actual bids are placed.
+
+Before practice, optionally preload the fast model with:
+
+```sh
+curl -sS http://127.0.0.1:11434/api/generate -H 'Content-Type: application/json' -d '{"model":"qwen3.5:4b","keep_alive":"15m"}'
+ollama ps
+```
+
+No live marketplace capture is enabled. The local demo URL guard remains in place. The official Whatnot Seller API concerns seller-owned stores; obtain written permission before implementing buyer-side stream capture. PSA access is optional and still pending.
+
+Tests: `python -m pytest -q tests`, `node tests/test_capture_worker.cjs`, `node tests/test_practice.cjs`. DINO integration tests use mocked vectors; model download, actual inference on Apple MPS, and Brave extension end-to-end practice require local testing.
