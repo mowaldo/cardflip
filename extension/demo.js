@@ -1,0 +1,1 @@
+'use strict';let url;document.getElementById('photo').onchange=e=>{const file=e.target.files[0];if(!file||!['image/png','image/jpeg'].includes(file.type))return;if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(file);const img=document.getElementById('photoPreview');img.src=url;img.hidden=false;};
