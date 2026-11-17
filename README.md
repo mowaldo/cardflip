@@ -1,3 +1,12 @@
+# CardFlip v1.2.0 preview — Workspace and research
+
+Install over v1.1.1 on a development branch. See [TESTING.md](TESTING.md) for the acceptance and observation-only workflow.
+
+- Workspace: 200 recent card families, clearable history, separate paper trades and actual inventory, CSV export, dated net-value snapshots and net profit accounting. No automatic buys.
+- Career context: NFL draft and rookie data, NBA bio/draft fields where available, MLB debut and optional level-specific minor league stats. Source/date retained; no automated ranking or news ingestion.
+- Investment research: descriptive market and cached player evidence; chronological replay using cached title-derived sales, not a predictive model.
+- Existing auction mode and clipboard workflow unchanged. No new requirements or paid API. PSA remains optional.
+
 # CardFlip Local v0.9.1
 
 Personal sports card recognition and resale research tool. Local Python and Chrome/Brave side panel. No paid hosting or AI API. Sold data uses your existing CompsAPI account and 100-request local monthly cap. No site monitoring, automated capture or bidding.
@@ -160,3 +169,28 @@ ollama ps
 No live marketplace capture is enabled. The local demo URL guard remains in place. The official Whatnot Seller API concerns seller-owned stores; obtain written permission before implementing buyer-side stream capture. PSA access is optional and still pending.
 
 Tests: `python -m pytest -q tests`, `node tests/test_capture_worker.cjs`, `node tests/test_practice.cjs`. DINO integration tests use mocked vectors; model download, actual inference on Apple MPS, and Brave extension end-to-end practice require local testing.
+
+## v1.1.0 preview — Player intelligence and hold research
+
+The auction scan, visual matching, price board and manual capture workflow are unchanged. Open **Player intelligence & hold research** after scanning (or manually entering a player); confirm NBA, NFL or MLB and press **Load player stats**. This is an opt-in research action, not an automatic auction step. No additional CompsAPI requests are made.
+
+- NBA: SportsDataverse/hoopR regular-season ESPN box score CSVs (season END year, e.g. 2027 for 2026–27). https://hoopr.sportsdataverse.org/reference/load_nba_player_box.html and https://github.com/sportsdataverse/hoopR-nba-data
+- NFL: nflverse `stats_player` weekly regular-season CSVs (season START year). https://github.com/nflverse/nflverse-data/releases/tag/stats_player ; attribution to nflverse and upstream sources.
+- MLB: MLB Stats API major-league season roster and regular-season hitting/pitching game logs. https://statsapi.mlb.com/api/v1 ; community documentation https://github.com/toddrob99/MLB-StatsAPI/wiki ; MLB data usage notice http://gdx.mlb.com/components/copyright.txt
+
+No keys or additional packages required. First NBA/NFL lookup downloads a season CSV (bounded to 35 MB, timeout); files are kept beside the local database in `data/player_data/` by default and reused for 24 hours. Player summaries are cached in the existing SQLite cache for 24 hours; old cached data is explicitly flagged if a refresh fails. Only exact normalized names are matched; no fuzzy matching. Data may be delayed, current season files may be unavailable, and prospects, retired players and name collisions may need a different season or manual research. Check the displayed **Through** game date/week, not just the download time. Provider availability, terms and redistribution rights are not guaranteed; review them before commercial use.
+
+Metrics compare recorded appearances: season average, newest five, and preceding five (minimum three). NFL rows are recorded player-weeks, not necessarily all games played. No injury, news, age, prospect ranking, or population feed is implemented yet. No missing stats are invented and no performance-to-price probability is inferred.
+
+The optional hold calculator uses the chosen price board cell, requires a fresh non-unspecified cell with known shipping, and calculates maximum hypothetical entry bids under user-editable bear/flat/bull exit price changes and an annualized ROI target. Defaults are illustrative (-50%, 0%, +50% total price change over three years, 15% annual target), not forecasts. It includes existing selling fee, buyer tax estimate, outbound costs, purchase tax, inbound costs and minimum dollar profit. It does not include future inflation, taxes on earnings, storage or changing fees; it does not alter the flip bid or provide a hold recommendation. The board adds a recent vs older 90-day sample median trend only where sufficient shipping-known sales exist.
+
+Tests: `python -m unittest discover -s tests` and `node tests/test_capture_worker.cjs && node tests/test_practice.cjs`. Live provider response schemas and the new Brave panel must be verified on the target Mac; the development sandbox has no network access to these providers. The existing local-only capture guard remains unchanged.
+
+## v1.1.1 preview — Compact outlook and injury research
+
+- The player drawer shows a compact recent-production summary and selected-card market trend. Expand Game statistics & sources for the original table and definitions.
+- Production labels are descriptive heuristics using two non-overlapping five-appearance windows. They are not rankings, price predictions or probabilities. MLB game-log changes are shown without an overall direction because role and innings matter.
+- Optional NFL injury research reads the nflverse season CSV (https://nflreadr.nflverse.com/reference/load_injuries.html). Shared season cache lasts six hours. Report week and dataset date are displayed; no matching report is not proof of health. No NBA/MLB automated injury inference; official report and prospect links open manually.
+- Player news opens a manual news search, not a news scraping or sentiment system. No CompsAPI requests are consumed by player or injury research.
+- PSA has discontinued its free API, per correspondence received by the project owner. No paid PSA integration is required or enabled.
+- Hold scenarios remain hypothetical. Pricing and capture behavior remain unchanged.

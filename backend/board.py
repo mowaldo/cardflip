@@ -67,7 +67,7 @@ def reference_limit(rows,settings,fetched):
     cost=(D(str(limit))+s['inbound'])*factor
     return {'bid':limit,'profit':core.money(proceeds-cost) if limit>0 else None,'roi':core.money((proceeds-cost)/cost*100) if limit>0 and cost>0 else None}
 
-def build(items,card,settings,fetched):
+def build(items,card,settings,fetched,full_sales=False):
     buckets=defaultdict(list); unresolved=[]; seen=set()
     for item in items:
         if not isinstance(item,dict):continue
@@ -111,10 +111,11 @@ def build(items,card,settings,fetched):
         value=round(median([r['price']+r['shipping'] for r in known]),2) if known else None
         usable=(len(known)==len(rows) and calc['recommendation']=='BUY CANDIDATE' and calc['max_bid'] is not None and calc['max_bid']>0)
         # Unspecified is deliberately a different row from Base. Bid is explicitly conditional.
-        cell={'grade':grade,'count':len(rows),'known_shipping':len(known),'last30':calc['last30_sample'],'median':value,'item_median':round(median([r['price'] for r in rows]),2),'max_bid':calc['max_bid'] if usable else None,'reason':('Recent title-derived sales meet the configured profit and ROI targets; identity and comps remain unverified.' if usable else ('Insufficient margin at a positive bid.' if calc['recommendation']=='BUY CANDIDATE' else calc['reason'])) if len(known)==len(rows) else 'Some shipping costs unknown; no bid estimate.','sales':rows[:12]}
+        cell={'grade':grade,'count':len(rows),'known_shipping':len(known),'last30':calc['last30_sample'],'median':value,'item_median':round(median([r['price'] for r in rows]),2),'max_bid':calc['max_bid'] if usable else None,'reason':('Recent title-derived sales meet the configured profit and ROI targets; identity and comps remain unverified.' if usable else ('Insufficient margin at a positive bid.' if calc['recommendation']=='BUY CANDIDATE' else calc['reason'])) if len(known)==len(rows) else 'Some shipping costs unknown; no bid estimate.','sales':rows if full_sales else rows[:12]}
         # Unspecified titles may contain mixed variants; no actionable reference ceiling for those.
         ref=None if name=='Unspecified' or usable else reference_limit(rows,settings,fetched)
         if name=='Unspecified':cell['max_bid']=None
+        cell['trend_pct']=calc.get('trend_pct') if name!='Unspecified' and len(known)==len(rows) else None
         cell['reference_bid']=ref['bid'] if ref else None
         cell['reference_profit']=ref['profit'] if ref else None
         cell['reference_roi']=ref['roi'] if ref else None

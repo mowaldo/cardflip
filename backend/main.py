@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
-from . import core, provider, recognition, label_image, vision, variants, board, visual_library, reference_market, embeddings
+from . import core, provider, recognition, label_image, vision, variants, board, visual_library, reference_market, embeddings, player_intel, outlook, workspace, prospect
 
 load_dotenv(core.ROOT/'.env')
 app=FastAPI(title='CardFlip Local',docs_url=None,redoc_url=None,openapi_url=None)
@@ -95,10 +95,12 @@ class VisualCompare(OCR):
     variant:str=Field(default='',max_length=80)
 
 def result(key,payload,fetched,origin,notice=''):
+    if key.startswith('live:'):
+        workspace.record(json_from_key(key),'exact lookup',{'matched':len(payload['rows']),'fetched':fetched})
     return {'key':key,'rows':payload['rows'],'source':payload['source'],'origin':origin,'fetched':fetched,'age_hours':round(core.age_hours(fetched),2),'stale':core.age_hours(fetched)>24,'notice':notice,'used':core.used(),'limit':core.budget()}
 
 @app.get('/api/status',dependencies=[Depends(auth)])
-def status(): return {'version':'1.0.2','key_configured':bool(os.getenv('COMPSAPI_KEY','').strip()),'used':core.used(),'limit':core.budget(),'ocr_available':bool(shutil.which('tesseract')),'visual_model_installed':embeddings.installed()}
+def status(): return {'version':'1.2.0','key_configured':bool(os.getenv('COMPSAPI_KEY','').strip()),'used':core.used(),'limit':core.budget(),'ocr_available':bool(shutil.which('tesseract')),'visual_model_installed':embeddings.installed()}
 
 @app.post('/api/lookup',dependencies=[Depends(auth)])
 def lookup(req:Lookup):
@@ -175,6 +177,7 @@ def price_board(req:BoardLookup):
                 if not old:raise HTTPException(503,str(e))
                 payload,fetched=old;notice=str(e)
     output=board.build(payload['items'],card,req.settings.model_dump(),fetched)
+    workspace.record(card,'price board',{'matched':output['matched_count'],'fetched':fetched})
     return dict(output,origin=origin,fetched=fetched,stale=core.age_hours(fetched)>24,used=core.used(),limit=core.budget(),notice=notice,retrieved=len(payload['items']))
 
 @app.post('/api/remember',dependencies=[Depends(auth)])
@@ -217,7 +220,8 @@ def vision_scan(req:Vision):
     try: data=base64.b64decode(req.image,validate=True)
     except (ValueError,binascii.Error): raise HTTPException(400,'Invalid image encoding.')
     if len(data)>5_000_000 or not (data.startswith(b'\x89PNG\r\n\x1a\n') or data.startswith(b'\xff\xd8\xff')): raise HTTPException(400,'Choose PNG or JPEG under 5 MB.')
-    try: return variants.recall(vision.scan(data,req.mode))
+    try:
+        output=variants.recall(vision.scan(data,req.mode));workspace.record(output.get('fields',{}),'scan');return output
     except RuntimeError as e: raise HTTPException(503,str(e))
     except (ValueError,OSError) as e: raise HTTPException(422,str(e))
 
@@ -294,7 +298,133 @@ def ocr(req:OCR):
     except (ValueError,binascii.Error): raise HTTPException(400,'Invalid image encoding.')
     if len(data)>5_000_000 or not (data.startswith(b'\x89PNG\r\n\x1a\n') or data.startswith(b'\xff\xd8\xff')): raise HTTPException(400,'Choose a PNG or JPEG under 5 MB.')
     try:
-        return label_image.scan_label(data)
+        output=label_image.scan_label(data);workspace.record(output.get('fields',{}),'scan');return output
     except (ValueError, OSError, subprocess.SubprocessError): raise HTTPException(422,'OCR failed or timed out. Try a sharper, cropped image.')
+
+class PlayerResearch(BaseModel):
+    player:str=Field(min_length=2,max_length=80)
+    league:Literal['NBA','NFL','MLB']
+    season:int|None=Field(default=None,ge=1999,le=2100)
+    refresh:bool=False
+
+@app.post('/api/player-research',dependencies=[Depends(auth)])
+def research_player(req:PlayerResearch):
+    if req.season and req.season>player_intel.season_for(req.league):raise HTTPException(422,'Choose a current or past season.')
+    try:
+        data=player_intel.research(req.player,req.league,req.season,req.refresh)
+        return dict(data,outlook=outlook.performance(data))
+    except RuntimeError as e:raise HTTPException(503,str(e))
+
+@app.post('/api/nfl-injury',dependencies=[Depends(auth)])
+def nfl_injury(req:PlayerResearch):
+    if req.league!='NFL':raise HTTPException(422,'NFL reports only.')
+    season=req.season or player_intel.season_for('NFL')
+    if season>player_intel.season_for('NFL'):raise HTTPException(422,'Choose a current or past season.')
+    try:return outlook.injury(req.player,season)
+    except RuntimeError as e:raise HTTPException(503,str(e))
+
+class HoldScenario(BaseModel):
+    median:float=Field(gt=0,le=1000000,allow_inf_nan=False)
+    settings:Settings
+    years:int=Field(ge=1,le=10)
+    annual_target:float=Field(ge=0,le=100,allow_inf_nan=False)
+    bear:float=Field(ge=-100,le=0,allow_inf_nan=False)
+    bull:float=Field(ge=0,le=1000,allow_inf_nan=False)
+
+@app.post('/api/hold-scenarios',dependencies=[Depends(auth)])
+def hold_scenarios(req:HoldScenario):
+    return {'scenarios':player_intel.hold_scenarios(req.median,req.settings.model_dump(),req.years,req.annual_target,[req.bear,0,req.bull]),'disclaimer':'Hypothetical exit prices only. No forecast, probability, or buy recommendation.'}
+
+class InventoryIdentity(BoardCard):
+    variant:str=Field(min_length=1,max_length=80)
+    grade_label:str=Field(min_length=1,max_length=80)
+    print_run:str=Field(default='',max_length=20)
+    @model_validator(mode='after')
+    def exact(self):
+        if not self.year or not self.set or not (self.number or self.print_run) or core.norm(self.variant) in ('','unknown','unspecified','none'):raise ValueError('Confirm year, product, number or print run, variant and grade.')
+        if not re.fullmatch(r'Raw|(?:PSA|CGC|BGS|SGC)(?: (?:Pristine|Gem Mint|Perfect|Black Label))? (?:[1-9](?:\.5)?|10)',self.grade_label):raise ValueError('Choose Raw or exact supported grade.')
+        return self
+class InventoryAdd(BaseModel):
+    card:InventoryIdentity
+    mode:Literal['real','paper']='paper'
+    strategy:Literal['flip','hold']='flip'
+    paid:float=Field(ge=0,le=1000000,allow_inf_nan=False)
+    inbound:float=Field(ge=0,le=1000000,allow_inf_nan=False)
+    tax:float=Field(ge=0,le=1000000,allow_inf_nan=False)
+    net_value:float|None=Field(default=None,ge=0,le=1000000,allow_inf_nan=False)
+    note:str=Field(default='',max_length=500)
+    confirmed:Literal[True]
+class InventoryId(BaseModel):
+    id:str=Field(pattern=r'^[a-f0-9]{32}$')
+class InventoryMark(InventoryId):
+    net_value:float|None=Field(default=None,ge=0,le=1000000,allow_inf_nan=False)
+class InventorySale(InventoryId):
+    gross:float=Field(ge=0,le=1000000,allow_inf_nan=False)
+    selling:float=Field(ge=0,le=1000000,allow_inf_nan=False)
+    outbound:float=Field(ge=0,le=1000000,allow_inf_nan=False)
+    other:float=Field(default=0,ge=0,le=1000000,allow_inf_nan=False)
+class CachedResearch(BaseModel):
+    card:BoardCard
+    number:str=Field(pattern=r'^[A-Za-z0-9-]{1,20}$')
+    variant:str=Field(min_length=1,max_length=80)
+    grade:str=Field(min_length=1,max_length=80)
+    settings:Settings=Field(default_factory=Settings)
+    days:int=Field(default=7,ge=1,le=60)
+    league:Literal['NBA','NFL','MLB']|None=None
+    confirmed:bool=False
+@app.get('/api/history',dependencies=[Depends(auth)])
+def get_history():return {'rows':workspace.history()}
+@app.post('/api/history/clear',dependencies=[Depends(auth)])
+def erase_history():return {'deleted':workspace.clear_history()}
+@app.get('/api/inventory',dependencies=[Depends(auth)])
+def inventory_list(mode:Literal['real','paper']='real'):return workspace.inventory(mode)
+@app.post('/api/inventory/add',dependencies=[Depends(auth)])
+def inventory_add(req:InventoryAdd):return {'id':workspace.create(req.model_dump())}
+@app.post('/api/inventory/mark',dependencies=[Depends(auth)])
+def inventory_mark(req:InventoryMark):
+    if not workspace.update(req.id,req.net_value):raise HTTPException(404,'Open card not found.')
+    return {'updated':True}
+@app.post('/api/inventory/sell',dependencies=[Depends(auth)])
+def inventory_sell(req:InventorySale):
+    if not workspace.sell(req.id,req.model_dump()):raise HTTPException(404,'Open card not found.')
+    return {'sold':True}
+@app.post('/api/inventory/delete',dependencies=[Depends(auth)])
+def inventory_delete(req:InventoryId):return {'deleted':workspace.delete(req.id)}
+@app.post('/api/career',dependencies=[Depends(auth)])
+def career(req:PlayerResearch):
+    try:return prospect.profile(req.player,req.league)
+    except RuntimeError as e:raise HTTPException(503,str(e))
+@app.post('/api/minor-stats',dependencies=[Depends(auth)])
+def minor_stats(req:PlayerResearch):
+    if req.league!='MLB':raise HTTPException(422,'Baseball only.')
+    season=req.season or player_intel.season_for('MLB')
+    if season>player_intel.season_for('MLB'):raise HTTPException(422,'Choose current or earlier season.')
+    try:return prospect.minor_stats(req.player,season)
+    except RuntimeError as e:raise HTTPException(503,str(e))
+@app.post('/api/card-research',dependencies=[Depends(auth)])
+def card_research(req:CachedResearch):
+    card=req.card.model_dump();saved=core.get_cache(board.key(card))
+    if not saved:raise HTTPException(404,'Load the price board first.')
+    payload,fetched=saved;result=board.build(payload['items'],card,req.settings.model_dump(),fetched,full_sales=True)
+    row=next((r for r in result['groups'] if r['number']==req.number and r['variant']==req.variant),None)
+    cell=row['cells'].get(req.grade) if row else None
+    if not cell:raise HTTPException(404,'Selected price cell not available.')
+    if req.variant=='Unspecified':raise HTTPException(422,'Choose an explicit variant.')
+    stale=core.age_hours(fetched)>24
+    assessment=workspace.assessment(cell,row,stale,req.confirmed)
+    if req.league:
+        season=player_intel.season_for(req.league)
+        p=core.get_cache('player-intel:v1:'+core.cache_key({'player':card['player'],'league':req.league,'season':season}))
+        if p and core.age_hours(p[1])<=24 and not p[0].get('stale'):
+            assessment['signals'].append('Player: '+outlook.performance(p[0])['label'])
+        else:assessment['signals'].append('Current player outlook not loaded')
+        bio=core.get_cache('career:v1:'+core.cache_key({'player':card['player'],'league':req.league,'season':season}))
+        if bio and core.age_hours(bio[1])<=24:
+            b=bio[0]
+            if b.get('age') is not None:assessment['signals'].append('Age '+str(b['age']))
+            if b.get('rookie_season'):assessment['signals'].append('Rookie season '+str(b['rookie_season']))
+            if b.get('draft_pick'):assessment['signals'].append('Draft pick '+str(b['draft_pick']))
+    assessment['signals'].append('Population and future demand unverified')
+    return {'assessment':assessment,'replay':workspace.replay(cell['sales'],req.settings.model_dump(),req.days) if req.confirmed else None,'fetched':fetched}
 
 app.mount('/',StaticFiles(directory=core.ROOT/'extension',html=True),name='ui')
